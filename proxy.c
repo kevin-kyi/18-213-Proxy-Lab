@@ -25,6 +25,10 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+//Useful functions included for parsing in serve
+#include "http_parser.h"
+
+
 /*
  * Debug macros, which can be enabled by adding -DDEBUG in the Makefile
  * Use these if you find them useful, or delete them if not
@@ -52,7 +56,172 @@ static const char *header_user_agent = "Mozilla/5.0"
                                        " (X11; Linux x86_64; rv:3.10.0)"
                                        " Gecko/20191101 Firefox/63.0.1";
 
+/*From tiny.c: */
+#define HOSTLEN 256
+#define SERVLEN 8
+
+/* Typedef for convenience */
+typedef struct sockaddr SA;
+
+/* Information about a connected client. */
+typedef struct {
+    struct sockaddr_in addr;    // Socket address
+    socklen_t addrlen;          // Socket address length
+    int connfd;                 // Client connection file descriptor
+    char host[HOSTLEN];         // Client host
+    char serv[SERVLEN];         // Client service (port)
+} client_info;
+
+/* URI parsing results. */
+typedef enum {
+    PARSE_ERROR,
+    PARSE_STATIC,
+    PARSE_DYNAMIC
+} parse_result;
+
+
+
+/*
+ * clienterror - returns an error message to the client
+ */
+void clienterror(int fd, const char *errnum, const char *shortmsg,
+                 const char *longmsg) {
+    char buf[MAXLINE];
+    char body[MAXBUF];
+    size_t buflen;
+    size_t bodylen;
+    
+
+    /* Build the HTTP response body */
+    bodylen = snprintf(body, MAXBUF,
+            "<!DOCTYPE html>\r\n" \
+            "<html>\r\n" \
+            "<head><title>Tiny Error</title></head>\r\n" \
+            "<body bgcolor=\"ffffff\">\r\n" \
+            "<h1>%s: %s</h1>\r\n" \
+            "<p>%s</p>\r\n" \
+            "<hr /><em>The Tiny Web server</em>\r\n" \
+            "</body></html>\r\n", \
+            errnum, shortmsg, longmsg);
+    if (bodylen >= MAXBUF) {
+        return; // Overflow!
+    }
+
+    /* Build the HTTP response headers */
+    buflen = snprintf(buf, MAXLINE,
+            "HTTP/1.0 %s %s\r\n" \
+            "Content-Type: text/html\r\n" \
+            "Content-Length: %zu\r\n\r\n", \
+            errnum, shortmsg, bodylen);
+    if (buflen >= MAXLINE) {
+        return; // Overflow!
+    }
+    /* Write the headers */
+    if (rio_writen(fd, buf, buflen) < 0) {
+        fprintf(stderr, "Error writing error response headers to client\n");
+        return;
+    }
+    /* Write the body */
+    if (rio_writen(fd, body, bodylen) < 0) {
+        fprintf(stderr, "Error writing error response body to client\n");
+        return;
+    }
+}
+
+
+
+
+
+
+
+void serve(client_info *client) {
+    // Get some extra info about the client (hostname/port)
+    // This is optional, but it's nice to know who's connected
+    int res = getnameinfo(
+            (SA *) &client->addr, client->addrlen,
+            client->host, sizeof(client->host),
+            client->serv, sizeof(client->serv),
+            0);
+    if (res == 0) {
+        printf("Accepted connection from %s:%s\n", client->host, client->serv);
+    }
+    else {
+        fprintf(stderr, "getnameinfo failed: %s\n", gai_strerror(res));
+    }
+
+    rio_t rio;
+    rio_readinitb(&rio, client->connfd);
+
+    /* Read request line */
+    char buf[MAXLINE];
+    if (rio_readlineb(&rio, buf, sizeof(buf)) <= 0) {
+        return;
+    }
+
+
+    parser_t *par = parser_new();
+    parser_parse_line(par, buf);
+
+    const char *method, *host, *port, *path;
+    
+
+
+
+
+
+
+
+
+}
+
+
+
+
 int main(int argc, char **argv) {
+    int listenfd;
+
+    /*From: tiny.c*/
+
+    /* Check Command line Args */
+    if (argc != 2){
+        fprintf(stderr, "usage: %s <port>\n", argv[0]);
+        exit(1);
+    }
+
+
+    listenfd = open_listenfd(argv[1]);
+    if (listenfd < 0) {
+        fprintf(stderr, "Failed to listen on port: %s\n", argv[1]);
+        exit(1);
+    }
+
+
+    //signal(SIGPIPE, SIG_IGN);
+    while (1) {
+        /* Allocate space on the stack for client info */
+        client_info client_data;
+        client_info *client = &client_data;
+
+        /* Initialize the length of the address */
+        client->addrlen = sizeof(client->addr);
+
+        /* accept() will block until a client connects to the port */
+        client->connfd = accept(listenfd,
+                (SA *) &client->addr, &client->addrlen);
+        if (client->connfd < 0) {
+            perror("accept");
+            continue;
+        }
+
+        /* Connection is established; serve client */
+        serve(client);
+        close(client->connfd);
+    }
+
     printf("%s", header_user_agent);
     return 0;
 }
+
+
+
+
