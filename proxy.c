@@ -130,6 +130,34 @@ void clienterror(int fd, const char *errnum, const char *shortmsg,
 
 
 
+bool read_requesthdrs(parser_t *par, client_info *client, rio_t *rp) {
+    char buf[MAXLINE];
+    parser_state ps; 
+
+
+    while (true) {
+        if (rio_readlineb(rp, buf, sizeof(buf)) <= 0) {
+            return true;
+        }
+
+        /* Check for end of request headers */
+        if (strcmp(buf, "\r\n") == 0) {
+            return false;
+        }
+
+        /* Parse header into name and value */
+        if (HEADER != (ps = parser_parse_line(par, buf))) {
+            /* Error parsing header */
+            clienterror(client->connfd, "400", "Bad Request",
+                        "Tiny could not parse request headers");
+            return true;
+        }
+
+    }
+    return false;
+}
+
+
 
 
 
@@ -163,15 +191,46 @@ void serve(client_info *client) {
     parser_parse_line(par, buf);
 
     const char *method, *host, *port, *path;
+    parse_retrieve(par, METHOD, &method);
+    parse_retrieve(par, HOST, &host);
+    parse_retrieve(par, PORT, &port);
+    parse_retrieve(par, PATH, &path);
+
+    if (strcmp(method, "GET") != 0) {
+        clienterror(client->connfd, "501", "Not Implemented",
+                    "Tiny does not implement this method");
+        parser_free(par);
+        return;
+    }
+
+    if(read_requesthdrs(client, &rio, par)){
+        parser_free(par);
+        return;
+    }
+
+
+    int client_fd = open_clientfd(host, port);
+    if (client_fd < 0){
+        fprintf(stderr, "Connection to host failed");
+        parser_free(par);
+        close(client_fd);
+        return;
+    }
+
+
     
+    
+    
+    
+    //server termination calls
+    size_t r;
+    rio_t nRio;
 
+    while ((r = rio_readnb(&nRio, buf, MAXLINE)) != 0){
+        rio_writen(client->connfd, buf, r);
+    }
 
-
-
-
-
-
-
+    return;
 }
 
 
