@@ -32,6 +32,7 @@
 #define HOSTLEN 256
 #define SERVLEN 8
 
+/*From tiny.c implementation:*/
 /* Typedef for convenience */
 typedef struct sockaddr SA;
 
@@ -59,8 +60,7 @@ static const char *header_user_agent = "Mozilla/5.0"
                                        " (X11; Linux x86_64; rv:3.10.0)"
                                        " Gecko/20230411 Firefox/63.0.1";
 
-static const char *connection_hdr = "Connection: close\r\n";
-static const char *proxy_connection_hdr = "Proxy-Connection: close\r\n";
+
 
 /*
  * clienterror - returns an error message to the client
@@ -110,14 +110,11 @@ void clienterror(int fd, const char *errnum, const char *shortmsg,
     }
 }
 
-/*
- * read_requesthdrs - read HTTP request headers
- * Returns true if an error occurred, or false otherwise.
- */
+
 bool read_requesthdrs(client_info *client, rio_t *rp, parser_t *parser) {
     char buf[MAXLINE];
 
-    // Read lines from socket until final carriage return reached
+
     while (true) {
         if (rio_readlineb(rp, buf, sizeof(buf)) <= 0) {
             return true;
@@ -128,112 +125,135 @@ bool read_requesthdrs(client_info *client, rio_t *rp, parser_t *parser) {
             return false;
         }
 
-        // Parse the request header with parser
-	    parser_state parse_state = parser_parse_line(parser, buf);
-        if (parse_state != HEADER) {
-	        clienterror(client->connfd, "400", "Bad Request",
-			"Tiny could not parse request headers");
-	        return true;
-	    }
+        /* Parse header into name and value */
+        parser_state ps = parser_parse_line(parser, buf);
+        if (ps != HEADER) {
+            /* Error parsing header */
+            clienterror(client->connfd, "400", "Bad Request",
+                        "Tiny could not parse request headers");
+            return true;
+        }
 
-	    header_t *header = parser_retrieve_next_header(parser);
-        printf("%s: %s\n", header->name, header->value);
+        
     }
 }
 
-/*
- * serve - handle one HTTP request/response transaction
- */
+
 void serve(client_info *client) {
-    // Get some extra info about the client (hostname/port)
-    // This is optional, but it's nice to know who's connected
-    int res = getnameinfo(
-            (SA *) &client->addr, client->addrlen,
-            client->host, sizeof(client->host),
-            client->serv, sizeof(client->serv),
-            0);
-    if (res == 0) {
-        printf("Accepted connection from %s:%s\n", client->host, client->serv);
-    }
-    else {
-        fprintf(stderr, "getnameinfo failed: %s\n", gai_strerror(res));
-    }
 
     rio_t rio;
+    parser_t *parser;
+    char buf[MAXLINE];
+
     rio_readinitb(&rio, client->connfd);
 
-    /* Read request line */
-    char buf[MAXLINE];
     if (rio_readlineb(&rio, buf, sizeof(buf)) <= 0) {
         return;
     }
 
-    // parser_new
-    // parse lines
-    // Construct request: method, host, port, path
+    parser = parser_new(); // remember to free
+    parser_parse_line(parser, buf);
 
-    printf("%s", buf);
+    const char *host;
+    const char *port;
+    const char *path;
+    const char *method;
+    const char *version;
 
-    /* Parse the request line and check if it's well-formed */
-    parser_t *parser = parser_new();
 
-    parser_state parse_state = parser_parse_line(parser, buf);
 
-    if (parse_state != REQUEST) {
+
+    if ((parser_retrieve(parser, HOST, &host) < 0) || (parser_retrieve(parser, PORT, &port) < 0) || 
+        (parser_retrieve(parser, PATH, &path) < 0) || (parser_retrieve(parser, METHOD, &method) < 0) || 
+        (parser_retrieve(parser, HTTP_VERSION, &version) < 0))
+    {
         parser_free(parser);
-	    clienterror(client->connfd, "400", "Bad Request",
-		    "Tiny received a malformed request");
-	    return;
+        return;
     }
 
-    /* Tiny only cares about METHOD and PATH from the request */
-    const char *method, *path;
-    parser_retrieve(parser, METHOD, &method);
-    parser_retrieve(parser, PATH, &path);
 
-    /* Check that the method is GET */
-    if (strcmp(method, "GET") != 0) {
-	    parser_free(parser);
-    	clienterror(client->connfd, "501", "Not Implemented",
-		    "Tiny does not implement this method");
-    	return;
+    //Error's from Tiny.c(serve)
+    if ((strcmp("1.0", version) != 0) && (strcmp("1.1", version) != 0)) {
+        clienterror(client->connfd, "400", "Bad Request",
+                    "Server received malformed request");
+        return;
     }
 
-    /* Check if reading request headers caused an error */
-    if (read_requesthdrs(client, &rio, parser)) {
+    if (strcmp("GET", method) != 0) {
+        clienterror(client->connfd, "501", "Not Implemented",
+                    "Proxy does not implmement this method");
+        return;
+    }
+
+    int client_fd = open_clientfd(host, port);
+    if (client_fd < 0) {
         parser_free(parser);
-	    return;
+        return;
+    }
+    //int n;
+    rio_t ser;
+    rio_readinitb(&ser, client_fd);
+    char bufPar[MAXLINE];
+
+    sprintf(bufPar, "%s %s HTTP/1.0\r\n", method, path);
+    rio_writen(client_fd, bufPar, strlen(bufPar));
+
+    if(read_requesthdrs(client, &rio, parser)){
+        parser_free(parser);
+        return;
     }
 
-    // header_t
-    char *host_temp = "Host: www.cmu.edu:8080\r\n";
-    char *conn_temp = "Connection: close\r\n";
-    char *proxy_temp = "Proxy-Connection: close\r\n";
-    header_t h;
-    while (h = parser_retrieve_next_header(parser) != NULL) {
-        rio_writen(client->connfd, host_temp, strlen(host_temp));
-        rio_writen(client->connfd, header_user_agent, strlen(header_user_agent));
-        rio_writen(client->connfd, conn_temp, strlen(conn_temp));
-        rio_writen(client->connfd, proxy_temp, strlen(proxy_temp));
+
+    header_t *header;
+
+
+    //Forwarding headers
+    while ((header = parser_retrieve_next_header(parser)) != NULL) {
+        int rioValid = 0; 
+        char bufHeader[MAXLINE];
+        if (strcmp("User-Agent", header->name) == 0) {
+            header->value = header_user_agent;
+            sprintf(bufHeader, "%s: %s\r\n", header->name, header->value);
+            rioValid++;
+        } else if (strcmp("Host", header->name) == 0) {
+            char bufHost[MAXLINE];
+            sprintf(bufHost, "%s:%s", host, port);
+            sprintf(bufHeader, "Host: %s\r\n", bufHost);
+            rioValid++;
+        } else if (strcmp("Connection", header->name) == 0) {
+            sprintf(bufHeader, "%s", "Connection: close\r\n");
+            rioValid++;
+        } else if (strcmp("Proxy-Connection", header->name) == 0) {
+            sprintf(bufHeader, "%s", "Proxy-Connection: close\r\n");
+            rioValid++;
+        } else {
+            sprintf(bufHeader, "%s: %s\r\n", header->name, header->value);
+            rioValid++;
+        }
+
+        if (rioValid != 0) rio_writen(client_fd, bufHeader, strlen(bufHeader));
+
     }
 
 
 
-    // Send headers: writeup 2 (parse line to do headers)
-    //      use rio
-    // Send to server:
-    //      use rio from buf
-    //       rio_writenb(server)
-    // free
+    // server termination 
+    rio_writen(client_fd, "\r\n", MAXLINE);
+    char bufTerm[MAXLINE];
+    int r;
+    while ((r = rio_readnb(&ser, bufTerm, MAXLINE)) > 0) {
+        rio_writen(client->connfd, bufTerm, r);
+    }
 
-
-    // parser_free(parser);
+    return;
 }
+
 
 
 int main(int argc, char **argv) {
     int listenfd;
 
+    /*From Tiny.c*/
     /* Check command line args */
     if (argc != 2) {
         fprintf(stderr, "usage: %s <port>\n", argv[0]);
@@ -257,8 +277,8 @@ int main(int argc, char **argv) {
         client->addrlen = sizeof(client->addr);
 
         /* accept() will block until a client connects to the port */
-        client->connfd = accept(listenfd,
-                (SA *) &client->addr, &client->addrlen);
+        client->connfd = accept(listenfd, (SA *) &client->addr, &client->addrlen);
+
         if (client->connfd < 0) {
             perror("accept");
             continue;
@@ -269,7 +289,4 @@ int main(int argc, char **argv) {
         close(client->connfd);
     }
 }
-
-
-
-
+print(hello);
