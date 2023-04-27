@@ -1,33 +1,21 @@
-/*
- * tiny.c - A simple, iterative HTTP/1.0 Web server that uses the
- *     GET method to serve static and dynamic content.
- *
- * Updated 04/2017 - Stanley Zhang <szz@andrew.cmu.edu>
- * Fixed some style issues, stop using csapp functions where not appropriate
- *
- *
- * Updated 11/2022 - Gilbert Fan <gsfan@andrew.cmu.edu>, Adittyo Paul <adittyop@andrew.cmu.edu>
- * Updated tiny to use http_parser instead of sscanf. Also changed
- * parse_uri into parse_path instead as the parsed string is a PATH.
- */
-
 #include "csapp.h"
 #include "http_parser.h"
+#include <pthread.h>
 
+#include <ctype.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
 #include <unistd.h>
-#include <ctype.h>
 
 #include <fcntl.h>
-#include <sys/stat.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <netinet/in.h>
-#include <netdb.h>
 
 #define HOSTLEN 256
 #define SERVLEN 8
@@ -38,19 +26,15 @@ typedef struct sockaddr SA;
 
 /* Information about a connected client. */
 typedef struct {
-    struct sockaddr_in addr;    // Socket address
-    socklen_t addrlen;          // Socket address length
-    int connfd;                 // Client connection file descriptor
-    char host[HOSTLEN];         // Client host
-    char serv[SERVLEN];         // Client service (port)
+    struct sockaddr_in addr; // Socket address
+    socklen_t addrlen;       // Socket address length
+    int connfd;              // Client connection file descriptor
+    char host[HOSTLEN];      // Client host
+    char serv[SERVLEN];      // Client service (port)
 } client_info;
 
 /* URI parsing results. */
-typedef enum {
-    PARSE_ERROR,
-    PARSE_STATIC,
-    PARSE_DYNAMIC
-} parse_result;
+typedef enum { PARSE_ERROR, PARSE_STATIC, PARSE_DYNAMIC } parse_result;
 
 /*
  * String to use for the User-Agent header.
@@ -59,8 +43,6 @@ typedef enum {
 static const char *header_user_agent = "Mozilla/5.0"
                                        " (X11; Linux x86_64; rv:3.10.0)"
                                        " Gecko/20230411 Firefox/63.0.1";
-
-
 
 /*
  * clienterror - returns an error message to the client
@@ -74,25 +56,25 @@ void clienterror(int fd, const char *errnum, const char *shortmsg,
 
     /* Build the HTTP response body */
     bodylen = snprintf(body, MAXBUF,
-            "<!DOCTYPE html>\r\n" \
-            "<html>\r\n" \
-            "<head><title>Tiny Error</title></head>\r\n" \
-            "<body bgcolor=\"ffffff\">\r\n" \
-            "<h1>%s: %s</h1>\r\n" \
-            "<p>%s</p>\r\n" \
-            "<hr /><em>The Tiny Web server</em>\r\n" \
-            "</body></html>\r\n", \
-            errnum, shortmsg, longmsg);
+                       "<!DOCTYPE html>\r\n"
+                       "<html>\r\n"
+                       "<head><title>Tiny Error</title></head>\r\n"
+                       "<body bgcolor=\"ffffff\">\r\n"
+                       "<h1>%s: %s</h1>\r\n"
+                       "<p>%s</p>\r\n"
+                       "<hr /><em>The Tiny Web server</em>\r\n"
+                       "</body></html>\r\n",
+                       errnum, shortmsg, longmsg);
     if (bodylen >= MAXBUF) {
         return; // Overflow!
     }
 
     /* Build the HTTP response headers */
     buflen = snprintf(buf, MAXLINE,
-            "HTTP/1.0 %s %s\r\n" \
-            "Content-Type: text/html\r\n" \
-            "Content-Length: %zu\r\n\r\n", \
-            errnum, shortmsg, bodylen);
+                      "HTTP/1.0 %s %s\r\n"
+                      "Content-Type: text/html\r\n"
+                      "Content-Length: %zu\r\n\r\n",
+                      errnum, shortmsg, bodylen);
     if (buflen >= MAXLINE) {
         return; // Overflow!
     }
@@ -110,10 +92,8 @@ void clienterror(int fd, const char *errnum, const char *shortmsg,
     }
 }
 
-
 bool read_requesthdrs(client_info *client, rio_t *rp, parser_t *parser) {
     char buf[MAXLINE];
-
 
     while (true) {
         if (rio_readlineb(rp, buf, sizeof(buf)) <= 0) {
@@ -133,11 +113,8 @@ bool read_requesthdrs(client_info *client, rio_t *rp, parser_t *parser) {
                         "Tiny could not parse request headers");
             return true;
         }
-
-        
     }
 }
-
 
 void serve(client_info *client) {
 
@@ -160,19 +137,16 @@ void serve(client_info *client) {
     const char *method;
     const char *version;
 
-
-
-
-    if ((parser_retrieve(parser, HOST, &host) < 0) || (parser_retrieve(parser, PORT, &port) < 0) || 
-        (parser_retrieve(parser, PATH, &path) < 0) || (parser_retrieve(parser, METHOD, &method) < 0) || 
-        (parser_retrieve(parser, HTTP_VERSION, &version) < 0))
-    {
+    if ((parser_retrieve(parser, HOST, &host) < 0) ||
+        (parser_retrieve(parser, PORT, &port) < 0) ||
+        (parser_retrieve(parser, PATH, &path) < 0) ||
+        (parser_retrieve(parser, METHOD, &method) < 0) ||
+        (parser_retrieve(parser, HTTP_VERSION, &version) < 0)) {
         parser_free(parser);
         return;
     }
 
-
-    //Error's from Tiny.c(serve)
+    // Error's from Tiny.c(serve)
     if ((strcmp("1.0", version) != 0) && (strcmp("1.1", version) != 0)) {
         clienterror(client->connfd, "400", "Bad Request",
                     "Server received malformed request");
@@ -190,7 +164,7 @@ void serve(client_info *client) {
         parser_free(parser);
         return;
     }
-    //int n;
+    // int n;
     rio_t ser;
     rio_readinitb(&ser, client_fd);
     char bufPar[MAXLINE];
@@ -198,18 +172,16 @@ void serve(client_info *client) {
     sprintf(bufPar, "%s %s HTTP/1.0\r\n", method, path);
     rio_writen(client_fd, bufPar, strlen(bufPar));
 
-    if(read_requesthdrs(client, &rio, parser)){
+    if (read_requesthdrs(client, &rio, parser)) {
         parser_free(parser);
         return;
     }
 
-
     header_t *header;
 
-
-    //Forwarding headers
+    // Forwarding headers
     while ((header = parser_retrieve_next_header(parser)) != NULL) {
-        int rioValid = 0; 
+        int rioValid = 0;
         char bufHeader[MAXLINE];
         if (strcmp("User-Agent", header->name) == 0) {
             header->value = header_user_agent;
@@ -231,13 +203,10 @@ void serve(client_info *client) {
             rioValid++;
         }
 
-        if (rioValid != 0) rio_writen(client_fd, bufHeader, strlen(bufHeader));
-
+        if (rioValid != 0)
+            rio_writen(client_fd, bufHeader, strlen(bufHeader));
     }
-
-
-
-    // server termination 
+    // server termination
     rio_writen(client_fd, "\r\n", MAXLINE);
     char bufTerm[MAXLINE];
     int r;
@@ -248,10 +217,20 @@ void serve(client_info *client) {
     return;
 }
 
+void *thread(void *vargp) {
+    // int connfd = *((int*)(vargp));
+    client_info *client = (client_info *)(vargp);
 
+    pthread_detach(pthread_self());
+    Free(vargp);
+    serve(client);
+    close(client->connfd);
+    return NULL;
+}
 
 int main(int argc, char **argv) {
     int listenfd;
+    // pthread_t tid;
 
     /*From Tiny.c*/
     /* Check command line args */
@@ -270,23 +249,37 @@ int main(int argc, char **argv) {
 
     while (1) {
         /* Allocate space on the stack for client info */
-        client_info client_data;
-        client_info *client = &client_data;
+        // client_info client_data;
+        // client_info *client = &client_data;
+        int *connfdp;
+        pthread_t tid;
+        // client_info *client = malloc(sizeof(client_info));
 
         /* Initialize the length of the address */
-        client->addrlen = sizeof(client->addr);
+        // client->addrlen = sizeof(client->addr);
+        struct sockaddr_storage clientaddr;
+        socklen_t clientaddr_len = sizeof(clientaddr);
 
         /* accept() will block until a client connects to the port */
-        client->connfd = accept(listenfd, (SA *) &client->addr, &client->addrlen);
+        // client->connfd = accept(listenfd, (SA *) &client->addr,
+        // &client->addrlen);
 
-        if (client->connfd < 0) {
+        // Threading:
+        connfdp = Malloc(sizeof(int));
+        // *connfdp = accept(listenfd, (SA *) &client->addr, &client->addrlen);
+        *connfdp = accept(listenfd, (SA *)&clientaddr, &clientaddr_len);
+
+        // if (client->connfd < 0) {
+        if (*connfdp < 0) {
             perror("accept");
             continue;
         }
 
         /* Connection is established; serve client */
-        serve(client);
-        close(client->connfd);
+        // serve(client);
+        // close(client->connfd);
+        // Threading:
+        // Pthread_create(&tid, NULL, serve, connfdp);
+        pthread_create(&tid, NULL, thread, connfdp);
     }
 }
-print(hello);
