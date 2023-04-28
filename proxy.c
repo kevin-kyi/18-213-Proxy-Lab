@@ -222,15 +222,15 @@ void *thread(void *vargp) {
     client_info *client = (client_info *)(vargp);
 
     pthread_detach(pthread_self());
-    Free(vargp);
+    // Free(vargp);
+    int clientfd = client->connfd;
     serve(client);
-    close(client->connfd);
-    return NULL;
+    close(clientfd);
 }
 
 int main(int argc, char **argv) {
     int listenfd;
-    // pthread_t tid;
+    pthread_t tid;
 
     /*From Tiny.c*/
     /* Check command line args */
@@ -238,7 +238,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s <port>\n", argv[0]);
         exit(1);
     }
-    signal(SIGPIPE, SIG_IGN);
 
     // Open listening file descriptor
     listenfd = open_listenfd(argv[1]);
@@ -246,31 +245,26 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to listen on port: %s\n", argv[1]);
         exit(1);
     }
-
+    signal(SIGPIPE, SIG_IGN);
     while (1) {
         /* Allocate space on the stack for client info */
-        // client_info client_data;
-        // client_info *client = &client_data;
-        int *connfdp;
-        pthread_t tid;
-        // client_info *client = malloc(sizeof(client_info));
+
+        // pthread_t tid;
 
         /* Initialize the length of the address */
-        // client->addrlen = sizeof(client->addr);
-        struct sockaddr_storage clientaddr;
-        socklen_t clientaddr_len = sizeof(clientaddr);
+
+        client_info *client = Malloc(sizeof(client_info));
+        client->addrlen = sizeof(client->addr);
 
         /* accept() will block until a client connects to the port */
-        // client->connfd = accept(listenfd, (SA *) &client->addr,
-        // &client->addrlen);
 
         // Threading:
-        connfdp = Malloc(sizeof(int));
-        // *connfdp = accept(listenfd, (SA *) &client->addr, &client->addrlen);
-        *connfdp = accept(listenfd, (SA *)&clientaddr, &clientaddr_len);
+
+        client->connfd =
+            accept(listenfd, (SA *)&client->addr, &client->addrlen);
 
         // if (client->connfd < 0) {
-        if (*connfdp < 0) {
+        if (client->connfd < 0) {
             perror("accept");
             continue;
         }
@@ -280,6 +274,6 @@ int main(int argc, char **argv) {
         // close(client->connfd);
         // Threading:
         // Pthread_create(&tid, NULL, serve, connfdp);
-        pthread_create(&tid, NULL, thread, connfdp);
+        pthread_create(&tid, NULL, thread, client);
     }
 }
