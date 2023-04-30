@@ -51,6 +51,20 @@ typedef enum { PARSE_ERROR, PARSE_STATIC, PARSE_DYNAMIC } parse_result;
 static const char *header_user_agent = "Mozilla/5.0"
                                        " (X11; Linux x86_64; rv:3.10.0)"
                                        " Gecko/20230411 Firefox/63.0.1";
+static const char *header_connection = "Connection close\r\n";
+static const char *header_proxy = "Proxy-Connection: close\r\n";
+
+void print_cache(cache_t *c) {
+    sio_printf("*****************PRINTING CACHE********************\n");
+    for (block_t *n = c->head; n != NULL; n = n->next) {
+        sio_printf("ADDRESS: %p\n", n);
+        sio_printf("REF CNT: %ld\n", n->refCount);
+        sio_printf("URL: %s\n", n->key);
+
+        sio_printf("******************************************\n");
+    }
+    sio_printf("************END PRINT****************\n");
+}
 
 /*
  * clienterror - returns an error message to the client
@@ -105,7 +119,7 @@ bool read_requesthdrs(int connfd, rio_t *rp, parser_t *parser) {
 
     while (true) {
         if (rio_readlineb(rp, buf, sizeof(buf)) <= 0) {
-            return true;
+            return false;
         }
 
         /* Check for end of request headers */
@@ -119,9 +133,10 @@ bool read_requesthdrs(int connfd, rio_t *rp, parser_t *parser) {
             /* Error parsing header */
             clienterror(connfd, "400", "Bad Request",
                         "Tiny could not parse request headers");
-            return true;
+            return false;
         }
     }
+    return false;
 }
 
 // void serve(client_info *client) {
@@ -138,148 +153,201 @@ void serve(int connfd) {
     }
 
     parser = parser_new(); // remember to free
-    parser_parse_line(parser, buf);
+    parser_state pState = parser_parse_line(parser, buf);
 
-    const char *host;
-    const char *port;
-    const char *path;
-    const char *method;
-    const char *version;
-    const char *uri;
-    parser_retrieve(parser, URI, &uri);
-
-    if ((parser_retrieve(parser, HOST, &host) < 0) ||
-        (parser_retrieve(parser, PORT, &port) < 0) ||
-        (parser_retrieve(parser, PATH, &path) < 0) ||
-        (parser_retrieve(parser, METHOD, &method) < 0) ||
-        (parser_retrieve(parser, HTTP_VERSION, &version) < 0)) {
+    if (pState != REQUEST) {
         parser_free(parser);
-        return;
-    }
-
-    // Error's from Tiny.c(serve)
-    if ((strcmp("1.0", version) != 0) && (strcmp("1.1", version) != 0)) {
         clienterror(connfd, "400", "Bad Request",
                     "Server received malformed request");
         return;
     }
 
+    const char *host;
+    const char *port;
+    const char *path;
+    const char *method;
+    const char *uri;
+    parser_retrieve(parser, HOST, &host);
+    parser_retrieve(parser, PORT, &port);
+    parser_retrieve(parser, PATH, &path);
+    parser_retrieve(parser, METHOD, &method);
+    parser_retrieve(parser, URI, &uri);
+
+    // Error's from Tiny.c(serve)
+
     if (strcmp("GET", method) != 0) {
+        parser_free(parser);
         clienterror(connfd, "501", "Not Implemented",
                     "Proxy does not implmement this method");
         return;
     }
-
-    // Cache implementation:
-    pthread_mutex_lock(&mutex);
-    block_t *block = find_key(uri, cache);
-    pthread_mutex_unlock(&mutex);
-
-    if (block != NULL) {
-        pthread_mutex_lock(&mutex);
-        block->refCount += 1;
-        pthread_mutex_unlock(&mutex);
-
-        rio_writen(connfd, block->data, block->blockSize);
-
-        pthread_mutex_lock(&mutex);
-        block->refCount -= 1;
-        pthread_mutex_unlock(&mutex);
-
-        pthread_mutex_lock(&mutex);
-        update_LRU(cache, block);
-        pthread_mutex_unlock(&mutex);
-
-        return;
-    }
-
-    int client_fd = open_clientfd(host, port);
-    if (client_fd < 0) {
-        parser_free(parser);
-        return;
-    }
-    // int n;
-    rio_t ser;
-    rio_readinitb(&ser, client_fd);
-    char bufPar[MAXLINE];
-
-    sprintf(bufPar, "%s %s HTTP/1.0\r\n", method, path);
-    rio_writen(client_fd, bufPar, strlen(bufPar));
 
     if (read_requesthdrs(connfd, &rio, parser)) {
         parser_free(parser);
         return;
     }
 
-    header_t *header;
+    // Cache implementation:
+    // char *line = malloc(strlen(uri) + 1);
+    // memcpy(line, uri, strlen(uri) + 1);
 
-    // Forwarding headers
-    char bufHeader[MAXLINE];
-    while ((header = parser_retrieve_next_header(parser)) != NULL) {
-        int rioValid = 0;
-        if (strcmp("User-Agent", header->name) == 0) {
-            header->value = header_user_agent;
-            sprintf(bufHeader, "%s: %s\r\n", header->name, header->value);
-            rioValid++;
-        } else if (strcmp("Host", header->name) == 0) {
-            char bufHost[MAXLINE];
-            sprintf(bufHost, "%s:%s", host, port);
-            sprintf(bufHeader, "Host: %s\r\n", bufHost);
-            rioValid++;
-        } else if (strcmp("Connection", header->name) == 0) {
-            sprintf(bufHeader, "%s", "Connection: close\r\n");
-            rioValid++;
-        } else if (strcmp("Proxy-Connection", header->name) == 0) {
-            sprintf(bufHeader, "%s", "Proxy-Connection: close\r\n");
-            rioValid++;
-        } else {
-            sprintf(bufHeader, "%s: %s\r\n", header->name, header->value);
-            rioValid++;
-        }
+    // pthread_mutex_lock(&mutex);
+    // block_t *block = find_key(line, cache);
+    // pthread_mutex_unlock(&mutex);
 
-        if (rioValid != 0)
-            rio_writen(client_fd, bufHeader, strlen(bufHeader));
+    // if(block != NULL){
+    //     sio_printf("Found!\n");
+    //     pthread_mutex_lock(&mutex);
+    //     block->refCount += 1;
+    //     pthread_mutex_unlock(&mutex);
+
+    //     if (rio_writen(connfd, block->data, block->blockSize) < 0){
+    //         fprintf(stderr, "Error: client response");
+    //         return;
+    //     }
+
+    //     pthread_mutex_lock(&mutex);
+    //     block->refCount --;
+    //     if ((block->refCount == 0) && !find_key(block->key, cache)){
+    //         free(block->data);
+    //         free(block->key);
+    //         free(block);
+    //         pthread_mutex_unlock(&mutex);
+    //         parser_free(parser);
+
+    //     }
+    //     pthread_mutex_unlock(&mutex);
+
+    //     pthread_mutex_lock(&mutex);
+    //     update_LRU(cache, block);
+    //     pthread_mutex_unlock(&mutex);
+
+    //     parser_free(parser);
+    //     return;
+    // }
+    // sio_printf("NOT FOUND! \n");
+
+    int client_fd = open_clientfd(host, port);
+    if (client_fd < 0) {
+        fprintf(stderr, "Could not connect to host: %s\n", host);
+        parser_free(parser);
+        close(client_fd);
+        return;
     }
 
-    snprintf(bufHeader, MAXLINE, "\r\n");
-    rio_writen(client_fd, bufHeader, strlen(bufHeader));
+    // char bufHeader[MAXLINE];
+    // char *version = "HTTP/1.0\r\n";
+    // size_t size = snprintf(bufHeader, MAXLINE, "%s %s %s", method, path,
+    // version);
+
+    // if (rio_writen(client_fd, bufHeader, size) < 0){
+    //     fprintf(stderr, "Error writing response headers\n");
+    //     return;
+    // }
+
+    // header_t *header = parser_lookup_header(parser, "Host");
+    // if (header != NULL) {
+    //     host = header->value;
+    //     size =
+    //         snprintf(bufHeader, MAXLINE,
+    //                 "Host: %s\r\n"
+    //                 "User-Agent: %s\r\n"
+    //                 "%s"
+    //                 "%s",
+    //                 host, header_user_agent, header_connection,
+    //                 header_proxy);
+    // } else {
+    //     size = snprintf(bufHeader, MAXLINE,
+    //                     "Host: %s:%s\r\n"
+    //                     "User-Agent: %s\r\n"
+    //                     "%s"
+    //                     "%s",
+    //                     host, port, header_user_agent, header_connection,
+    //                     header_proxy);
+    // }
+
+    // if (rio_writen(client_fd, bufHeader, size) < 0) {
+    //     fprintf(stderr, "Error writing response headers\n");
+    //     return;
+    // }
+    // //Forwarding headers
+    // header = parser_retrieve_next_header(parser);
+    // while (header != NULL) {
+    //     if ((strcmp(header->name, "Host") != 0) &&
+    //         (strcmp(header->name, "User-Agent") != 0) &&
+    //         (strcmp(header->name, "Connection") != 0) &&
+    //         (strcmp(header->name, "Proxy-Connection") != 0)){
+    //         size = snprintf(bufHeader, MAXLINE, "%s: %s\r\n", header->name,
+    //         header->value);
+
+    //         if (rio_writen(client_fd, bufHeader, size) < 0){
+    //             fprintf(stderr, "Error writing response headers\n");
+    //             return;
+    //         }
+    //     }
+    //     header = parser_retrieve_next_header(parser);
+
+    // }
+
+    // snprintf(bufHeader, MAXLINE, "\r\n");
+
+    if (rio_writen(client_fd, "\r\n", MAXLINE) < 0) {
+        fprintf(stderr, "Error writing response headers\n");
+        return;
+    }
+
+    rio_t ser;
+    rio_readinitb(&ser, client_fd);
 
     // server termination
-    rio_writen(client_fd, "\r\n", MAXLINE);
-    // char bufTerm[MAXLINE];
-    char bufTerm[MAXLINE];
     size_t numBytes;
-    size_t totalBytes = 0;
+    // size_t totalBytes = 0;
+    // bool addFlag = 1;
+    char bufTerm[MAXLINE];
+    // char rBuf[MAX_OBJECT_SIZE];
 
-    char rBuf[MAX_CACHE_SIZE];
-
-    while ((numBytes = rio_readnb(&ser, bufTerm, MAXLINE)) > 0) {
+    while ((numBytes = rio_readnb(&ser, bufTerm, MAXLINE)) != 0) {
         rio_writen(connfd, bufTerm, numBytes);
-        totalBytes += numBytes;
-        if (totalBytes <= MAX_OBJECT_SIZE) {
-            memcpy(rBuf + totalBytes - numBytes, bufTerm, numBytes);
-        }
-    }
-    if (totalBytes <= MAX_OBJECT_SIZE) {
-        pthread_mutex_lock(&mutex);
-        insert_block(cache, totalBytes, uri, rBuf);
-        pthread_mutex_unlock(&mutex);
-    }
 
-    return;
+        // if (totalBytes + numBytes <= MAX_OBJECT_SIZE) {
+        //     totalBytes += numBytes;
+        //     memcpy(rBuf + totalBytes - numBytes, bufTerm, numBytes);
+        // } else{
+        //     addFlag = 0;
+        // }
+    }
+    // if (addFlag) {
+    //     pthread_mutex_lock(&mutex);
+    //     char *data = malloc(totalBytes);
+    //     memcpy(data, rBuf, totalBytes);
+    //     char *key = malloc(strlen(uri) + 1);
+    //     memcpy(key, uri, strlen(uri) + 1);
+
+    //     insert_block(cache, totalBytes, key, data);
+    //     pthread_mutex_unlock(&mutex);
+    // }
+
+    // print_cache(cache);
+
+    // parser_free(parser);
+    close(client_fd);
 }
 
 void *thread(void *vargp) {
+    fprintf(stderr, "IN THREAD! \n");
     int connfd = *((int *)vargp);
     pthread_detach(pthread_self());
-    free(vargp);
+    Free(vargp);
     serve(connfd);
     close(connfd);
 }
 
 int main(int argc, char **argv) {
     int listenfd;
-    pthread_t tid;
+
+    // cache = init_cache();
+    // pthread_mutex_init(&mutex, NULL);
+    signal(SIGPIPE, SIG_IGN);
 
     /*From Tiny.c*/
     /* Check command line args */
@@ -293,26 +361,24 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to listen on port: %s\n", argv[1]);
         exit(1);
     }
-    cache = init_cache();
-    pthread_mutex_init(&mutex, NULL);
-    signal(SIGPIPE, SIG_IGN);
-    while (1) {
 
-        int *connfdp;
+    while (1) {
+        pthread_t tid;
+
         client_info client_data;
         client_info *client = &client_data;
         client->addrlen = sizeof(client->addr);
-        connfdp = Malloc(sizeof(int));
+        int *connfdp = malloc(sizeof(int));
         *connfdp = accept(listenfd, (SA *)&client->addr, &client->addrlen);
 
         // if (client->connfd < 0) {
-        if (client->connfd < 0) {
+        if (*connfdp < 0) {
             perror("accept");
             continue;
         }
 
         /* Connection Thread is established; serve client */
-        pthread_create(&tid, NULL, thread, connfdp);
+        pthread_create(&tid, NULL, thread, (void *)connfdp);
     }
-    return 0;
+    // return 0;
 }
